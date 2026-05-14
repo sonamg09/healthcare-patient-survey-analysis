@@ -152,7 +152,7 @@ fig2.update_layout(
     plot_bgcolor='white',
 )
 
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, width='stretch')
 
 # Summary stats table beneath the chart
 st.subheader("Response Rate Summary by Measure ID")
@@ -163,7 +163,7 @@ summary = (
     .loc[[m for m in measure_order if m in selected_measures]]
     .reset_index()
 )
-st.dataframe(summary, use_container_width=True)
+st.dataframe(summary, width='stretch')
 
 
 # --- Problem #3: Top 3 Counties with the Highest Survey Response Rate ---
@@ -197,8 +197,8 @@ fig3.update_layout(
     showlegend=True,
 )
 
-st.plotly_chart(fig3, use_container_width=True)
-st.dataframe(county_rate, use_container_width=True)
+st.plotly_chart(fig3, width='stretch')
+st.dataframe(county_rate, width='stretch')
 
 # --- Problem #4: Top 10 Hospitals with the Highest Survey Response Rate ---
 
@@ -236,8 +236,8 @@ fig4.update_layout(
     height=500,
 )
 
-st.plotly_chart(fig4, use_container_width=True)
-st.dataframe(hospital_rate, use_container_width=True)
+st.plotly_chart(fig4, width='stretch')
+st.dataframe(hospital_rate, width='stretch')
 
 
 # --- Problem #5: County and City wise Hospital Rating — Drill-down Report ---
@@ -289,7 +289,7 @@ fig5 = px.treemap(
     title=f'Hospital Ratings — {selected_county} County, {selected_state}',
 )
 fig5.update_layout(height=550, margin=dict(t=50, l=10, r=10, b=10))
-st.plotly_chart(fig5, use_container_width=True)
+st.plotly_chart(fig5, width='stretch')
 
 # Bar chart for filtered hospitals
 drilldown_sorted = drilldown_df.sort_values('Avg Star Rating', ascending=True)
@@ -310,8 +310,8 @@ fig6.update_layout(
     height=max(300, len(drilldown_sorted) * 35),
     showlegend=True,
 )
-st.plotly_chart(fig6, use_container_width=True)
-st.dataframe(drilldown_sorted.reset_index(drop=True), use_container_width=True)
+st.plotly_chart(fig6, width='stretch')
+st.dataframe(drilldown_sorted.reset_index(drop=True), width='stretch')
 
 
 # --- Problem #6: Hospitals in the Same City ---
@@ -359,7 +359,7 @@ fig7.update_layout(
     height=600,
     showlegend=True,
 )
-st.plotly_chart(fig7, use_container_width=True)
+st.plotly_chart(fig7, width='stretch')
 
 # City picker — see exact hospital list
 p6_cities = sorted(p6_df['City'].unique())
@@ -374,4 +374,80 @@ city_detail = (
     .drop_duplicates(subset=['Provider ID'])
     .reset_index(drop=True)
 )
-st.dataframe(city_detail, use_container_width=True)
+st.dataframe(city_detail, width='stretch')
+
+
+# --- Problem #7: Total Survey Response Rate by All Hospitals ---
+st.header("Total Survey Response Rate by All Hospitals")
+
+all_hospital_rate = (
+    df_clean.dropna(subset=['Survey Response Rate Percent'])
+    .groupby(['Provider ID', 'Hospital Name', 'City', 'State'])['Survey Response Rate Percent']
+    .first()
+    .reset_index()
+    .rename(columns={'Survey Response Rate Percent': 'Response Rate (%)'})
+    .sort_values('Response Rate (%)', ascending=False)
+    .reset_index(drop=True)
+)
+
+# Sidebar controls for this section
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("All Hospitals — Response Rate")
+    p7_states = ["All"] + sorted(all_hospital_rate['State'].unique())
+    p7_state = st.selectbox("Filter by State", p7_states, key="p7_state")
+    p7_sort = st.selectbox("Sort by", ["Response Rate (%) ↓", "Response Rate (%) ↑", "Hospital Name"], key="p7_sort")
+    p7_n = st.slider("Hospitals to display in chart", 10, len(all_hospital_rate), 30, key="p7_n")
+
+p7_df = all_hospital_rate if p7_state == "All" else all_hospital_rate[all_hospital_rate['State'] == p7_state]
+
+if p7_sort == "Response Rate (%) ↑":
+    p7_df = p7_df.sort_values('Response Rate (%)', ascending=True)
+elif p7_sort == "Hospital Name":
+    p7_df = p7_df.sort_values('Hospital Name')
+else:
+    p7_df = p7_df.sort_values('Response Rate (%)', ascending=False)
+
+p7_df = p7_df.reset_index(drop=True)
+
+
+# Distribution histogram of response rates
+fig_hist = px.histogram(
+    p7_df,
+    x='Response Rate (%)',
+    nbins=20,
+    title='Distribution of Survey Response Rates Across All Hospitals',
+    labels={'Response Rate (%)': 'Response Rate (%)', 'count': 'Number of Hospitals'},
+    color_discrete_sequence=['steelblue'],
+)
+fig_hist.update_layout(plot_bgcolor='white', bargap=0.05)
+st.plotly_chart(fig_hist, width='stretch')
+
+# Bar chart for top N hospitals
+chart_df = p7_df.head(p7_n)
+fig_p7 = px.bar(
+    chart_df,
+    x='Response Rate (%)',
+    y='Hospital Name',
+    color='State',
+    orientation='h',
+    text='Response Rate (%)',
+    hover_data=['City', 'State', 'Provider ID'],
+    title=f'Survey Response Rate — Top {p7_n} Hospitals{"" if p7_state == "All" else f" in {p7_state}"}',
+    labels={'Response Rate (%)': 'Response Rate (%)'},
+)
+fig_p7.update_traces(texttemplate='%{text:.0f}%', textposition='outside')
+fig_p7.update_layout(
+    xaxis=dict(range=[0, chart_df['Response Rate (%)'].max() * 1.2]),
+    yaxis=dict(autorange='reversed'),
+    plot_bgcolor='white',
+    height=max(400, p7_n * 22),
+    showlegend=True,
+)
+st.plotly_chart(fig_p7, width='stretch')
+
+# Full sortable data table
+st.subheader(f"All Hospitals — Response Rate Table ({len(p7_df)} hospitals)")
+st.dataframe(p7_df.reset_index(drop=True), width='stretch')
+
+
