@@ -77,7 +77,7 @@ The app opens at **http://localhost:8501** in your browser.
 
 ## Data
 
-The source file (`data/Health Care_Patient_survey_source.csv`) contains HCAHPS survey responses with the following key fields:
+The source file (`data/Health Care_Patient_survey_source.csv`) contains survey responses with the following key fields:
 
 | Field | Description |
 |---|---|
