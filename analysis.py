@@ -1,17 +1,14 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import numpy as np
 
 st.title("Healthcare Patient Survey Analysis")
-
-pd.set_option('display.expand_frame_repr', False)
 
 # --- Shared layout defaults ---
 CHART_LAYOUT = dict(plot_bgcolor='white')
 
 def style_hbar(fig, max_val, height=500, show_legend=False):
-    """Apply standard horizontal-bar layout: reversed y-axis, padded x-range, white bg."""
     fig.update_traces(textposition='outside')
     fig.update_layout(
         xaxis=dict(range=[0, max_val * 1.2]),
@@ -23,23 +20,88 @@ def style_hbar(fig, max_val, height=500, show_legend=False):
     return fig
 
 
-@st.cache_data
-def load_data(path):
-    return pd.read_csv(path)
-
-df_raw   = load_data('data/Health Care_Patient_survey_source.csv')
-df_clean = df_raw.dropna(subset=['Number of Completed Surveys'])
-
-footnote_cols = [
-    'Patient Survey Star Rating Footnote',
-    'Answer Percent Footnote',
-    'Number of Completed Surveys Footnote',
-    'Survey Response Rate Percent Footnote',
+NUMERIC_COLS = [
+    'Number of Completed Surveys', 'Patient Survey Star Rating',
+    'Answer Percent', 'Linear Mean Value', 'Survey Response Rate Percent',
 ]
-df_clean = df_clean.drop(columns=footnote_cols)
+FOOTNOTE_COLS = [
+    'Patient Survey Star Rating Footnote', 'Answer Percent Footnote',
+    'Number of Completed Surveys Footnote', 'Survey Response Rate Percent Footnote',
+]
 
-for col in ['Number of Completed Surveys', 'Patient Survey Star Rating', 'Answer Percent', 'Linear Mean Value', 'Survey Response Rate Percent']:
-    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+
+@st.cache_data
+def load_data_from_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.replace('Not Applicable', pd.NA, inplace=True)
+    df.drop(columns=[c for c in FOOTNOTE_COLS if c in df.columns], inplace=True)
+    return df
+
+
+@st.cache_data
+def load_data_from_snowflake(account: str, user: str, password: str,
+                              database: str, warehouse: str, schema: str) -> pd.DataFrame:
+    import sqlalchemy as sa
+    from snowflake.sqlalchemy import URL
+    engine = sa.create_engine(URL(
+        account=account.lower(),
+        user=user,
+        password=password,
+        database=database,
+        warehouse=warehouse,
+        schema=schema,
+    ))
+    query = """
+        SELECT
+            h.hospital_id                        AS "Provider ID",
+            h.hospital_name                      AS "Hospital Name",
+            h.location                           AS "Address",
+            NULL                                 AS "Phone Number",
+            h.city                               AS "City",
+            c.state                              AS "State",
+            c.zipcode                            AS "ZIP Code",
+            c.county_name                        AS "County Name",
+            m.measure_id                         AS "Measure ID",
+            s.survey_question                    AS "Question",
+            s.survey_answer                      AS "Answer Description",
+            m.measure_start_date                 AS "Measure Start Date",
+            m.measure_end_date                   AS "Measure End Date",
+            f.answer_percent                     AS "Answer Percent",
+            f.linear_mean_value                  AS "Linear Mean Value",
+            f.patient_survey_star_rating         AS "Patient Survey Star Rating",
+            f.no_completed_surveys               AS "Number of Completed Surveys",
+            f.survey_response_rate_percent       AS "Survey Response Rate Percent"
+        FROM fact_survey_response f
+        JOIN dim_county_details   c ON f.county_id   = c.county_id
+        JOIN dim_hospital_details h ON f.hospital_id = h.hospital_id
+        JOIN dim_measure_details  m ON f.measure_id  = m.measure_id
+        JOIN dim_survey_details   s ON f.survey_id   = s.survey_id
+    """
+    return pd.read_sql(query, engine)
+
+
+_sf_account   = os.getenv('SNOWFLAKE_ACCOUNT')
+_sf_user      = os.getenv('SNOWFLAKE_USER')
+_sf_password  = os.getenv('SNOWFLAKE_PASSWORD')
+_sf_database  = os.getenv('SNOWFLAKE_DATABASE')
+_sf_warehouse = os.getenv('SNOWFLAKE_WAREHOUSE')
+_sf_schema    = os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC')
+
+_snowflake_ready = all([_sf_account, _sf_user, _sf_password, _sf_database, _sf_warehouse])
+use_csv = os.getenv('USE_CSV', '').lower() == 'true' or not _snowflake_ready
+
+if use_csv:
+    df_raw = load_data_from_csv('data/Health Care_Patient_survey_source.csv')
+else:
+    df_raw = load_data_from_snowflake(
+        _sf_account, _sf_user, _sf_password, _sf_database, _sf_warehouse, _sf_schema
+    )
+
+df_clean = df_raw.dropna(subset=['Number of Completed Surveys']).copy()
+
+for col in NUMERIC_COLS:
+    if col in df_clean.columns:
+        df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
 
 df_clean['Measure Start Date'] = pd.to_datetime(df_clean['Measure Start Date'], errors='coerce')
 df_clean['Measure End Date']   = pd.to_datetime(df_clean['Measure End Date'],   errors='coerce')
@@ -87,10 +149,10 @@ col_state.metric("Most Responses — State", top_state, f"{top_state_val:,} surv
 # --- Sidebar controls ---
 with st.sidebar:
     n_points   = st.slider("Data points", 20, 200, 20)
-    chart_type = st.selectbox("Chart type", ["Bar", "Line", "Scatter"])
+    chart_type = st.selectbox("Chart type", ["Bar", "Scatter"])
     show_data  = st.checkbox("Show raw data")
 
-chart_fn = {'Bar': px.bar, 'Line': px.line, 'Scatter': px.scatter}[chart_type]
+chart_fn = {'Bar': px.bar, 'Scatter': px.scatter}[chart_type]
 fig_surveys_by_hospital = chart_fn(
     surveys_by_hospital.head(n_points),
     y='Hospital Name',
@@ -163,7 +225,7 @@ fig_response_by_measure.update_layout(
     yaxis=dict(title='Measure ID'),
     **CHART_LAYOUT,
 )
-st.plotly_chart(fig_response_by_measure, width='stretch')
+st.plotly_chart(fig_response_by_measure, use_container_width=True)
 
 # Summary stats table beneath the chart
 st.subheader("Response Rate Summary by Measure ID")
@@ -174,7 +236,7 @@ response_rate_summary = (
     .loc[[m for m in measure_order if m in selected_measures]]
     .reset_index()
 )
-st.dataframe(response_rate_summary, width='stretch')
+st.dataframe(response_rate_summary)
 
 
 # --- Problem #3: Top 3 Counties with the Highest Survey Response Rate ---
@@ -207,8 +269,8 @@ fig_top_counties.update_layout(
     showlegend=True,
     **CHART_LAYOUT,
 )
-st.plotly_chart(fig_top_counties, width='stretch')
-st.dataframe(county_rate, width='stretch')
+st.plotly_chart(fig_top_counties, use_container_width=True)
+st.dataframe(county_rate)
 
 
 # --- Problem #4: Top 10 Hospitals with the Highest Survey Response Rate ---
@@ -237,8 +299,8 @@ fig_top_hospitals = px.bar(
 )
 fig_top_hospitals.update_traces(texttemplate='%{text:.1f}%')
 style_hbar(fig_top_hospitals, hospital_rate['Avg Response Rate (%)'].max())
-st.plotly_chart(fig_top_hospitals, width='stretch')
-st.dataframe(hospital_rate, width='stretch')
+st.plotly_chart(fig_top_hospitals, use_container_width=True)
+st.dataframe(hospital_rate)
 
 
 # --- Problem #5: County and City wise Hospital Rating — Drill-down Report ---
@@ -290,7 +352,7 @@ fig_rating_treemap = px.treemap(
     title=f'Hospital Ratings — {selected_county} County, {selected_state}',
 )
 fig_rating_treemap.update_layout(height=550, margin=dict(t=50, l=10, r=10, b=10))
-st.plotly_chart(fig_rating_treemap, width='stretch')
+st.plotly_chart(fig_rating_treemap, use_container_width=True)
 
 # Bar chart for filtered hospitals
 drilldown_sorted = drilldown_df.sort_values('Avg Star Rating', ascending=True)
@@ -311,8 +373,8 @@ fig_rating_bar.update_layout(
     showlegend=True,
     **CHART_LAYOUT,
 )
-st.plotly_chart(fig_rating_bar, width='stretch')
-st.dataframe(drilldown_sorted.reset_index(drop=True), width='stretch')
+st.plotly_chart(fig_rating_bar, use_container_width=True)
+st.dataframe(drilldown_sorted.reset_index(drop=True))
 
 
 # --- Problem #6: Hospitals in the Same City ---
@@ -323,8 +385,7 @@ city_hospitals = (
     df_clean[['State', 'City', 'Provider ID', 'Hospital Name']]
     .drop_duplicates()
     .groupby(['State', 'City'])
-    .agg(Hospital_Count=('Hospital Name', 'count'),
-         Hospitals=('Hospital Name', lambda x: ', '.join(sorted(x.unique()))))
+    .agg(Hospital_Count=('Hospital Name', 'count'))
     .reset_index()
     .query('Hospital_Count > 1')
     .sort_values('Hospital_Count', ascending=False)
@@ -353,7 +414,7 @@ fig_same_city = px.bar(
     labels={'Hospital_Count': 'Number of Hospitals', 'City': 'City'},
 )
 style_hbar(fig_same_city, top_cities['Hospital_Count'].max(), height=600, show_legend=True)
-st.plotly_chart(fig_same_city, width='stretch')
+st.plotly_chart(fig_same_city, use_container_width=True)
 
 # City picker — see exact hospital list
 same_city_cities    = sorted(same_city_df['City'].unique())
@@ -368,7 +429,7 @@ city_detail = (
     .drop_duplicates(subset=['Provider ID'])
     .reset_index(drop=True)
 )
-st.dataframe(city_detail, width='stretch')
+st.dataframe(city_detail)
 
 
 # --- Problem #7: Total Survey Response Rate by All Hospitals ---
@@ -414,7 +475,7 @@ fig_response_dist = px.histogram(
     color_discrete_sequence=['steelblue'],
 )
 fig_response_dist.update_layout(bargap=0.05, **CHART_LAYOUT)
-st.plotly_chart(fig_response_dist, width='stretch')
+st.plotly_chart(fig_response_dist, use_container_width=True)
 
 # Bar chart for top N hospitals
 all_rate_chart_df = all_rate_df.head(all_rate_n)
@@ -431,8 +492,122 @@ fig_all_rate = px.bar(
 )
 fig_all_rate.update_traces(texttemplate='%{text:.0f}%')
 style_hbar(fig_all_rate, all_rate_chart_df['Response Rate (%)'].max(), height=max(400, all_rate_n * 22), show_legend=True)
-st.plotly_chart(fig_all_rate, width='stretch')
+st.plotly_chart(fig_all_rate, use_container_width=True)
 
 # Full sortable data table
 st.subheader(f"All Hospitals — Response Rate Table ({len(all_rate_df)} hospitals)")
-st.dataframe(all_rate_df.reset_index(drop=True), width='stretch')
+st.dataframe(all_rate_df.reset_index(drop=True))
+
+
+# --- Problem #8: National Average Score by Care Dimension ---
+st.header("National Average Score by Care Dimension")
+
+linear_measures = (
+    df_clean[df_clean['Measure ID'].str.endswith('_LINEAR_SCORE', na=False)]
+    .dropna(subset=['Linear Mean Value'])
+    .copy()
+)
+linear_measures['Care Dimension'] = (
+    linear_measures['Question']
+    .str.replace(r'\s*-\s*linear mean score$', '', regex=True)
+    .str.strip()
+    .str.title()
+)
+
+dim_avg = (
+    linear_measures.groupby('Care Dimension')['Linear Mean Value']
+    .mean()
+    .reset_index()
+    .rename(columns={'Linear Mean Value': 'Avg Score (0–100)'})
+    .sort_values('Avg Score (0–100)', ascending=False)
+    .reset_index(drop=True)
+)
+
+fig_dim = px.bar(
+    dim_avg,
+    x='Avg Score (0–100)',
+    y='Care Dimension',
+    orientation='h',
+    text='Avg Score (0–100)',
+    title='National Average Score by Care Dimension',
+    color='Avg Score (0–100)',
+    color_continuous_scale='RdYlGn',
+    range_color=[50, 90],
+)
+fig_dim.update_traces(texttemplate='%{text:.1f}', textposition='outside')
+style_hbar(fig_dim, dim_avg['Avg Score (0–100)'].max(), height=max(400, len(dim_avg) * 42))
+fig_dim.update_layout(coloraxis_showscale=False)
+st.plotly_chart(fig_dim, use_container_width=True)
+st.dataframe(dim_avg.round(1))
+
+
+# Per-hospital pivot: one column per care dimension
+hosp_dim = (
+    linear_measures.groupby(['Provider ID', 'Care Dimension'])['Linear Mean Value']
+    .mean()
+    .unstack('Care Dimension')
+    .reset_index()
+)
+
+OUTCOMES    = ['Overall Hospital Rating', 'Recommend Hospital']
+PREDICTORS  = [c for c in hosp_dim.columns if c not in ['Provider ID'] + OUTCOMES]
+
+# Median response rate across hospitals
+median_rate = (
+    df_clean.dropna(subset=['Survey Response Rate Percent'])
+    .groupby('Provider ID')['Survey Response Rate Percent']
+    .first()
+    .median()
+)
+
+# Pearson correlations between each predictor and each outcome
+corr_rows = []
+for pred in PREDICTORS:
+    for outcome in OUTCOMES:
+        subset = hosp_dim[[pred, outcome]].dropna()
+        if len(subset) >= 5:
+            r = subset.corr().iloc[0, 1]
+            corr_rows.append({'Care Dimension': pred, 'Outcome': outcome, 'r': round(r, 2)})
+corr_long = pd.DataFrame(corr_rows)
+
+# Nurse communication correlations for KPI cards
+nurse_col = next((c for c in hosp_dim.columns if 'Nurse' in c), None)
+if nurse_col:
+    nurse_rating_r = hosp_dim[[nurse_col, 'Overall Hospital Rating']].dropna().corr().iloc[0, 1]
+    nurse_recmnd_r = hosp_dim[[nurse_col, 'Recommend Hospital']].dropna().corr().iloc[0, 1]
+else:
+    nurse_rating_r = nurse_recmnd_r = float('nan')
+
+# --- Problem #9: Key Insights ---
+st.header("Key Insights")
+
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("National Median Response Rate", f"{median_rate:.0f}%",
+            help="Half of all hospitals have a response rate at or below this value.")
+kpi2.metric("Nurse Comm → Overall Rating", f"r = {nurse_rating_r:.2f}",
+            help="Pearson correlation between nurse communication score and overall hospital rating.")
+kpi3.metric("Nurse Comm → Recommendation", f"r = {nurse_recmnd_r:.2f}",
+            help="Pearson correlation between nurse communication score and patient recommendation rate.")
+
+# Grouped bar: correlation of each dimension with both outcomes
+st.subheader("Dimension Correlation with Patient Outcomes")
+fig_corr = px.bar(
+    corr_long,
+    x='r',
+    y='Care Dimension',
+    color='Outcome',
+    orientation='h',
+    barmode='group',
+    text='r',
+    title='Pearson Correlation — Care Dimensions vs. Overall Rating & Recommendation',
+    labels={'r': 'Correlation (r)'},
+)
+fig_corr.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+fig_corr.update_layout(
+    xaxis=dict(range=[0, 1.2]),
+    height=max(400, len(PREDICTORS) * 45),
+    **CHART_LAYOUT,
+)
+st.plotly_chart(fig_corr, use_container_width=True)
+
+st.dataframe(corr_long.pivot(index='Care Dimension', columns='Outcome', values='r').reset_index())
